@@ -78,6 +78,44 @@ fn check_linux_dependencies() {
 #[cfg(not(target_os = "linux"))]
 fn check_linux_dependencies() {}
 
+/// Sync auto-launch setting with current executable path
+/// This ensures auto-launch works even if the binary is moved
+fn sync_auto_launch(settings: &Settings) {
+    use auto_launch::AutoLaunchBuilder;
+    
+    if !settings.start_on_login {
+        return;
+    }
+    
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(e) => {
+            tracing::warn!("Failed to get executable path for auto-launch: {}", e);
+            return;
+        }
+    };
+    
+    let auto_launch = match AutoLaunchBuilder::new()
+        .set_app_name("Vibe Downloader")
+        .set_app_path(&exe_path)
+        .set_use_launch_agent(true)
+        .build()
+    {
+        Ok(al) => al,
+        Err(e) => {
+            tracing::warn!("Failed to build auto-launch: {}", e);
+            return;
+        }
+    };
+    
+    // Re-enable to update the path if it changed
+    if let Err(e) = auto_launch.enable() {
+        tracing::warn!("Failed to sync auto-launch: {}", e);
+    } else {
+        info!("Auto-launch synced with current executable path");
+    }
+}
+
 /// Application state shared across all components
 pub struct AppState {
     pub settings: RwLock<Settings>,
@@ -117,7 +155,10 @@ fn main() -> Result<()> {
     info!("Database initialized");
 
     // Create shared application state
-    let state = Arc::new(AppState::new(settings, db));
+    let state = Arc::new(AppState::new(settings.clone(), db));
+    
+    // Sync auto-launch setting with current executable path
+    sync_auto_launch(&settings);
 
     // Start the async runtime for the server
     let server_state = Arc::clone(&state);

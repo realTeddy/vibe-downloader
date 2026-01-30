@@ -4,6 +4,7 @@ use crate::config::{self, FileTypeConfig};
 use crate::db::{DownloadRecord, DownloadStatus};
 use crate::download::{self, DownloadStats};
 use crate::AppState;
+use auto_launch::AutoLaunchBuilder;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -317,7 +318,11 @@ async fn update_settings(
     
     if let Some(start) = req.start_on_login {
         settings.start_on_login = start;
-        // TODO: Update auto-launch setting
+        
+        // Configure auto-launch
+        if let Err(e) = configure_auto_launch(start) {
+            tracing::error!("Failed to configure auto-launch: {}", e);
+        }
     }
     
     // Save to file
@@ -328,6 +333,34 @@ async fn update_settings(
         max_concurrent_downloads: settings.max_concurrent_downloads,
         start_on_login: settings.start_on_login,
     }))
+}
+
+/// Configure auto-launch on system startup
+fn configure_auto_launch(enable: bool) -> Result<(), String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    
+    let exe_path_str = exe_path.to_string_lossy().to_string();
+    
+    let auto_launch = AutoLaunchBuilder::new()
+        .set_app_name("Vibe Downloader")
+        .set_app_path(&exe_path_str)
+        .set_use_launch_agent(true) // macOS: use LaunchAgent instead of login items
+        .build()
+        .map_err(|e| format!("Failed to build auto-launch: {}", e))?;
+    
+    if enable {
+        auto_launch.enable().map_err(|e| format!("Failed to enable auto-launch: {}", e))?;
+        info!("Auto-launch enabled");
+    } else {
+        // Only disable if currently enabled
+        if auto_launch.is_enabled().unwrap_or(false) {
+            auto_launch.disable().map_err(|e| format!("Failed to disable auto-launch: {}", e))?;
+            info!("Auto-launch disabled");
+        }
+    }
+    
+    Ok(())
 }
 
 // ============ File Type Endpoints ============
