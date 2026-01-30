@@ -24,6 +24,60 @@ use crate::config::Settings;
 use crate::db::Database;
 use crate::download::DownloadManager;
 
+/// Check for required system dependencies on Linux
+#[cfg(target_os = "linux")]
+fn check_linux_dependencies() {
+    use std::process::Command;
+    
+    let libs = [
+        ("libgtk-3.so.0", "libgtk-3-0"),
+        ("libayatana-appindicator3.so.1", "libayatana-appindicator3-1"),
+        ("libxdo.so.3", "libxdo3"),
+    ];
+    
+    let mut missing = Vec::new();
+    
+    for (lib, package) in &libs {
+        // Use ldconfig to check if library is available
+        let output = Command::new("ldconfig")
+            .args(["-p"])
+            .output();
+        
+        let found = match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout.contains(lib)
+            }
+            Err(_) => {
+                // Fallback: check common library paths
+                std::path::Path::new(&format!("/usr/lib/x86_64-linux-gnu/{}", lib)).exists()
+                    || std::path::Path::new(&format!("/usr/lib/{}", lib)).exists()
+            }
+        };
+        
+        if !found {
+            missing.push(*package);
+        }
+    }
+    
+    if !missing.is_empty() {
+        eprintln!("\n╭─────────────────────────────────────────────────────────────╮");
+        eprintln!("│  ⚠️  Missing Dependencies                                    │");
+        eprintln!("├─────────────────────────────────────────────────────────────┤");
+        eprintln!("│  The following packages are required but not installed:     │");
+        for pkg in &missing {
+            eprintln!("│    • {:<53} │", pkg);
+        }
+        eprintln!("├─────────────────────────────────────────────────────────────┤");
+        eprintln!("│  Install with:                                              │");
+        eprintln!("│    sudo apt install {}  │", missing.join(" "));
+        eprintln!("╰─────────────────────────────────────────────────────────────╯\n");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_linux_dependencies() {}
+
 /// Application state shared across all components
 pub struct AppState {
     pub settings: RwLock<Settings>,
@@ -43,6 +97,9 @@ impl AppState {
 }
 
 fn main() -> Result<()> {
+    // Check for required dependencies on Linux
+    check_linux_dependencies();
+    
     // Initialize logging
     let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
