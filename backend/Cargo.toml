@@ -1,0 +1,67 @@
+[package]
+name = "vibe-downloader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "A cross-platform download manager with web UI"
+
+[[bin]]
+name = "vibe-downloader"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+
+# Web framework
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# HTTP client for downloads
+reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
+
+# WebSocket
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# System tray
+tray-icon = "0.19"
+
+# Auto-start on login
+auto-launch = "0.5"
+
+# Embed frontend assets
+rust-embed = { version = "8.5", features = ["debug-embed"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = { version = "2.5", features = ["serde"] }
+urlencoding = "2.1"
+mime_guess = "2.0"
+dirs = "5.0"
+thiserror = "2.0"
+anyhow = "1.0"
+once_cell = "1.20"
+parking_lot = "0.12"
+open = "5.3"
+
+# Image for tray icon
+image = "0.25"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser"] }
