@@ -11,6 +11,13 @@ use tracing::info;
 
 /// Run the system tray
 pub fn run(state: Arc<AppState>) -> Result<()> {
+    // Initialize GTK on Linux
+    #[cfg(target_os = "linux")]
+    {
+        // GTK must be initialized before creating tray icon
+        gtk::init().map_err(|e| anyhow::anyhow!("Failed to initialize GTK: {}", e))?;
+    }
+    
     // Create tray menu
     let menu = Menu::new();
     
