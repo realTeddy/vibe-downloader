@@ -18,6 +18,10 @@ pub struct Settings {
     
     /// Whether to start on system login
     pub start_on_login: bool,
+    
+    /// Whether to start on boot without login (Linux systemd service)
+    #[serde(default)]
+    pub start_on_boot: bool,
 }
 
 impl Default for Settings {
@@ -118,6 +122,7 @@ impl Default for Settings {
             max_concurrent_downloads: 3,
             file_types,
             start_on_login: false,
+            start_on_boot: false,
         }
     }
 }

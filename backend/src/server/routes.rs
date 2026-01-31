@@ -398,6 +398,8 @@ pub struct SettingsResponse {
     pub server_port: u16,
     pub max_concurrent_downloads: usize,
     pub start_on_login: bool,
+    pub start_on_boot: bool,
+    pub start_on_boot_available: bool,
 }
 
 /// Get current settings
@@ -409,6 +411,8 @@ async fn get_settings(
         server_port: settings.server.port,
         max_concurrent_downloads: settings.max_concurrent_downloads,
         start_on_login: settings.start_on_login,
+        start_on_boot: settings.start_on_boot,
+        start_on_boot_available: cfg!(target_os = "linux"),
     })
 }
 
@@ -417,6 +421,7 @@ async fn get_settings(
 pub struct UpdateSettingsRequest {
     pub max_concurrent_downloads: Option<usize>,
     pub start_on_login: Option<bool>,
+    pub start_on_boot: Option<bool>,
 }
 
 /// Update settings
@@ -440,6 +445,16 @@ async fn update_settings(
         }
     }
     
+    if let Some(start) = req.start_on_boot {
+        settings.start_on_boot = start;
+        
+        // Configure systemd service (Linux only)
+        #[cfg(target_os = "linux")]
+        if let Err(e) = configure_systemd_service(start) {
+            tracing::error!("Failed to configure systemd service: {}", e);
+        }
+    }
+    
     // Save to file
     config::save(&settings)?;
     
@@ -447,6 +462,8 @@ async fn update_settings(
         server_port: settings.server.port,
         max_concurrent_downloads: settings.max_concurrent_downloads,
         start_on_login: settings.start_on_login,
+        start_on_boot: settings.start_on_boot,
+        start_on_boot_available: cfg!(target_os = "linux"),
     }))
 }
 
@@ -473,6 +490,93 @@ fn configure_auto_launch(enable: bool) -> Result<(), String> {
             auto_launch.disable().map_err(|e| format!("Failed to disable auto-launch: {}", e))?;
             info!("Auto-launch disabled");
         }
+    }
+    
+    Ok(())
+}
+
+/// Configure systemd user service for boot startup (Linux only)
+#[cfg(target_os = "linux")]
+fn configure_systemd_service(enable: bool) -> Result<(), String> {
+    use std::process::Command;
+    
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    
+    let service_dir = dirs::config_dir()
+        .ok_or("Could not find config directory")?
+        .join("systemd/user");
+    
+    let service_path = service_dir.join("vibe-downloader.service");
+    
+    if enable {
+        // Create systemd user service directory
+        std::fs::create_dir_all(&service_dir)
+            .map_err(|e| format!("Failed to create systemd directory: {}", e))?;
+        
+        // Create service file
+        let service_content = format!(
+            r#"[Unit]
+Description=Vibe Downloader - Download Manager with Web UI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={}
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
+"#,
+            exe_path.display()
+        );
+        
+        std::fs::write(&service_path, service_content)
+            .map_err(|e| format!("Failed to write service file: {}", e))?;
+        
+        // Reload systemd and enable service
+        Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .output()
+            .map_err(|e| format!("Failed to reload systemd: {}", e))?;
+        
+        Command::new("systemctl")
+            .args(["--user", "enable", "vibe-downloader.service"])
+            .output()
+            .map_err(|e| format!("Failed to enable service: {}", e))?;
+        
+        // Enable lingering so service starts at boot without login
+        let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+        let linger_result = Command::new("loginctl")
+            .args(["enable-linger", &user])
+            .output();
+        
+        if let Err(e) = linger_result {
+            tracing::warn!("Failed to enable linger (may need sudo): {}", e);
+        }
+        
+        info!("Systemd service enabled for boot startup");
+    } else {
+        // Disable and remove service
+        let _ = Command::new("systemctl")
+            .args(["--user", "disable", "vibe-downloader.service"])
+            .output();
+        
+        let _ = Command::new("systemctl")
+            .args(["--user", "stop", "vibe-downloader.service"])
+            .output();
+        
+        if service_path.exists() {
+            let _ = std::fs::remove_file(&service_path);
+        }
+        
+        let _ = Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .output();
+        
+        info!("Systemd service disabled");
     }
     
     Ok(())

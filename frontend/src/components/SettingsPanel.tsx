@@ -30,14 +30,17 @@ export function SettingsPanel() {
 
   const [maxConcurrent, setMaxConcurrent] = useState<number | null>(null)
   const [startOnLogin, setStartOnLogin] = useState<boolean | null>(null)
+  const [startOnBoot, setStartOnBoot] = useState<boolean | null>(null)
 
   const currentMaxConcurrent = maxConcurrent ?? settings?.max_concurrent_downloads ?? 3
   const currentStartOnLogin = startOnLogin ?? settings?.start_on_login ?? false
+  const currentStartOnBoot = startOnBoot ?? settings?.start_on_boot ?? false
 
   const handleSaveSettings = () => {
     updateSettingsMutation.mutate({
       max_concurrent_downloads: currentMaxConcurrent,
       start_on_login: currentStartOnLogin,
+      start_on_boot: currentStartOnBoot,
     })
   }
 
@@ -92,6 +95,30 @@ export function SettingsPanel() {
               Start on system login
             </label>
           </div>
+
+          {/* Start on Boot (Linux only) */}
+          {settings?.start_on_boot_available && (
+            <div className="flex items-start gap-3 py-2">
+              <input
+                type="checkbox"
+                id="startOnBoot"
+                checked={currentStartOnBoot}
+                onChange={(e) => setStartOnBoot(e.target.checked)}
+                className="w-5 h-5 text-primary-500 rounded focus:ring-primary-500 mt-0.5"
+              />
+              <div>
+                <label
+                  htmlFor="startOnBoot"
+                  className="text-sm font-medium text-slate-700 dark:text-slate-300"
+                >
+                  Start on boot (without login)
+                </label>
+                <p className="text-xs text-slate-500 dark:text-slate-500 mt-1">
+                  Linux only: Creates a systemd service. May require entering your password once.
+                </p>
+              </div>
+            </div>
+          )}
 
           <button
             onClick={handleSaveSettings}

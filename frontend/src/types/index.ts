@@ -40,6 +40,8 @@ export interface Settings {
   server_port: number
   max_concurrent_downloads: number
   start_on_login: boolean
+  start_on_boot: boolean
+  start_on_boot_available: boolean
 }
 
 export interface ProgressUpdate {
