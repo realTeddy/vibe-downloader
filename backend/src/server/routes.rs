@@ -291,48 +291,111 @@ pub struct UrlInfoResponse {
     pub content_type: Option<String>,
 }
 
-/// Get file info from URL via HEAD request
+/// Get file info from URL via HEAD request, falling back to GET with range if needed
 async fn get_url_info(
     Json(req): Json<UrlInfoRequest>,
 ) -> Result<Json<UrlInfoResponse>, AppError> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(|e| AppError::Internal(e.to_string()))?;
     
-    // Make HEAD request to get headers without downloading
-    let response = client
+    // Try HEAD request first
+    let head_response = client
         .head(&req.url)
         .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to fetch URL info: {}", e)))?;
+        .await;
     
-    let headers = response.headers();
+    let (filename, size, content_type) = match head_response {
+        Ok(response) if response.status().is_success() => {
+            let headers = response.headers();
+            let filename = headers
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| parse_content_disposition(v));
+            let size = headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok());
+            let content_type = headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
+            
+            // If HEAD didn't give us a filename, try GET with range
+            if filename.is_none() {
+                match try_get_with_range(&client, &req.url).await {
+                    Some((get_filename, get_size, get_content_type)) => {
+                        (get_filename, get_size.or(size), get_content_type.or(content_type))
+                    }
+                    None => (filename, size, content_type)
+                }
+            } else {
+                (filename, size, content_type)
+            }
+        }
+        _ => {
+            // HEAD failed or returned error, try GET with range
+            try_get_with_range(&client, &req.url).await
+                .unwrap_or((None, None, None))
+        }
+    };
     
-    // Try to get filename from Content-Disposition header
-    let filename = headers
-        .get("content-disposition")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| parse_content_disposition(v))
-        .or_else(|| extract_filename_from_url(&req.url));
-    
-    // Get file size from Content-Length
-    let size = headers
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok());
-    
-    // Get content type
-    let content_type = headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
+    // Fall back to URL path for filename
+    let filename = filename.or_else(|| extract_filename_from_url(&req.url));
     
     Ok(Json(UrlInfoResponse {
         filename,
         size,
         content_type,
     }))
+}
+
+/// Try to get file info using GET request with Range header (downloads minimal data)
+async fn try_get_with_range(
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<(Option<String>, Option<u64>, Option<String>)> {
+    // Request only first byte to minimize data transfer
+    let response = client
+        .get(url)
+        .header("Range", "bytes=0-0")
+        .send()
+        .await
+        .ok()?;
+    
+    if !response.status().is_success() && response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return None;
+    }
+    
+    let headers = response.headers();
+    
+    let filename = headers
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_content_disposition(v));
+    
+    // For range requests, Content-Range header has full size: "bytes 0-0/12345"
+    let size = headers
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split('/').last())
+        .and_then(|v| v.parse().ok())
+        .or_else(|| {
+            headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+        });
+    
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
+    
+    Some((filename, size, content_type))
 }
 
 /// Parse filename from Content-Disposition header
