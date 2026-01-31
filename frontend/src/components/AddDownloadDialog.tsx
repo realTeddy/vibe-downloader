@@ -8,48 +8,20 @@ interface AddDownloadDialogProps {
   onClose: () => void
 }
 
-/** Extract filename from URL */
-function extractFilenameFromUrl(urlString: string): string | null {
-  try {
-    const url = new URL(urlString)
-    const pathname = url.pathname
-    // Get the last segment of the path
-    const segments = pathname.split('/').filter(Boolean)
-    if (segments.length > 0) {
-      const lastSegment = segments[segments.length - 1]
-      // Decode URI and check if it looks like a filename (has extension)
-      const decoded = decodeURIComponent(lastSegment)
-      if (decoded.includes('.') && !decoded.startsWith('.')) {
-        return decoded
-      }
-    }
-  } catch {
-    // Invalid URL
-  }
-  return null
-}
-
-/** Auto-detect file type based on URL extension */
-function detectFileType(
-  urlString: string,
+/** Auto-detect file type based on filename extension */
+function detectFileTypeFromFilename(
+  filename: string,
   fileTypes: Record<string, { name: string; extensions: string[]; destination: string }> | undefined
 ): string {
-  if (!fileTypes) return 'general'
+  if (!fileTypes || !filename) return 'general'
   
-  try {
-    const url = new URL(urlString)
-    const pathname = url.pathname.toLowerCase()
-    const ext = pathname.split('.').pop()
-    
-    if (ext) {
-      for (const [id, config] of Object.entries(fileTypes)) {
-        if (config.extensions.some(e => e.toLowerCase() === ext.toLowerCase())) {
-          return id
-        }
+  const ext = filename.split('.').pop()?.toLowerCase()
+  if (ext) {
+    for (const [id, config] of Object.entries(fileTypes)) {
+      if (config.extensions.some(e => e.toLowerCase() === ext)) {
+        return id
       }
     }
-  } catch {
-    // Invalid URL
   }
   return 'general'
 }
@@ -59,7 +31,9 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
   const [fileType, setFileType] = useState('general')
   const [filename, setFilename] = useState('')
   const [autoStarted, setAutoStarted] = useState(false)
+  const [fetchingInfo, setFetchingInfo] = useState(false)
   const urlInputRef = useRef<HTMLInputElement>(null)
+  const lastFetchedUrl = useRef<string>('')
   
   const queryClient = useQueryClient()
 
@@ -97,23 +71,34 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
   const maxConcurrent = settings?.max_concurrent_downloads ?? 3
   const hasCapacity = activeDownloads < maxConcurrent
   
-  // Handle URL change - extract filename and auto-detect file type
-  const handleUrlChange = (newUrl: string) => {
-    setUrl(newUrl)
-    
-    // Only process if it looks like a valid URL
-    if (newUrl.startsWith('http://') || newUrl.startsWith('https://')) {
-      // Extract filename
-      const extracted = extractFilenameFromUrl(newUrl)
-      if (extracted && !filename) {
-        setFilename(extracted)
-      }
+  // Fetch URL info when URL changes
+  useEffect(() => {
+    const trimmedUrl = url.trim()
+    if (
+      trimmedUrl &&
+      (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) &&
+      trimmedUrl !== lastFetchedUrl.current
+    ) {
+      lastFetchedUrl.current = trimmedUrl
+      setFetchingInfo(true)
       
-      // Auto-detect file type
-      const detected = detectFileType(newUrl, fileTypes)
-      setFileType(detected)
+      api.getUrlInfo(trimmedUrl)
+        .then((info) => {
+          if (info.filename && !filename) {
+            setFilename(info.filename)
+            // Auto-detect file type from the fetched filename
+            const detected = detectFileTypeFromFilename(info.filename, fileTypes)
+            setFileType(detected)
+          }
+        })
+        .catch(() => {
+          // Silently fail - user can still enter filename manually
+        })
+        .finally(() => {
+          setFetchingInfo(false)
+        })
     }
-  }
+  }, [url, filename, fileTypes])
   
   // Auto-start download when URL is pasted and there's capacity
   useEffect(() => {
@@ -122,9 +107,10 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
       hasCapacity &&
       !autoStarted &&
       !addMutation.isPending &&
+      !fetchingInfo &&
       (url.startsWith('http://') || url.startsWith('https://'))
     ) {
-      // Small delay to allow user to see what's happening
+      // Small delay to allow URL info fetch to complete
       const timer = setTimeout(() => {
         setAutoStarted(true)
         addMutation.mutate({
@@ -132,11 +118,11 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
           file_type: fileType,
           filename: filename.trim() || undefined,
         })
-      }, 300)
+      }, 500)
       
       return () => clearTimeout(timer)
     }
-  }, [url, hasCapacity, autoStarted, addMutation.isPending, fileType, filename])
+  }, [url, hasCapacity, autoStarted, addMutation.isPending, fetchingInfo, fileType, filename])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -182,15 +168,22 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
               URL
             </label>
-            <input
-              ref={urlInputRef}
-              type="url"
-              value={url}
-              onChange={(e) => handleUrlChange(e.target.value)}
-              placeholder="Paste URL to auto-start download"
-              className="w-full px-3 py-3 text-base border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              autoFocus
-            />
+            <div className="relative">
+              <input
+                ref={urlInputRef}
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="Paste URL to auto-start download"
+                className="w-full px-3 py-3 text-base border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                autoFocus
+              />
+              {fetchingInfo && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+                </div>
+              )}
+            </div>
           </div>
 
           {/* File Type Select */}
@@ -226,7 +219,7 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
               type="text"
               value={filename}
               onChange={(e) => setFilename(e.target.value)}
-              placeholder="Auto-detected from URL"
+              placeholder="Auto-detected from server"
               className="w-full px-3 py-3 text-base border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
@@ -242,11 +235,11 @@ export function AddDownloadDialog({ onClose }: AddDownloadDialogProps) {
             </button>
             <button
               type="submit"
-              disabled={addMutation.isPending}
+              disabled={addMutation.isPending || fetchingInfo}
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 active:bg-primary-700 transition-colors disabled:opacity-50 font-medium"
             >
-              {addMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-              {addMutation.isPending ? 'Starting...' : 'Add Download'}
+              {(addMutation.isPending || fetchingInfo) && <Loader2 className="w-4 h-4 animate-spin" />}
+              {fetchingInfo ? 'Fetching info...' : addMutation.isPending ? 'Starting...' : 'Add Download'}
             </button>
           </div>
         </form>

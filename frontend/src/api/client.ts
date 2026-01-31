@@ -81,4 +81,11 @@ export const api = {
   
   removeFileType: (id: string) =>
     fetchJson<void>(`/file-types/${id}`, { method: 'DELETE' }),
+  
+  // URL utilities
+  getUrlInfo: (url: string) =>
+    fetchJson<{ filename: string | null; size: number | null; content_type: string | null }>('/url-info', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
 }

@@ -31,6 +31,8 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/downloads/{id}", delete(remove_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/stats", get(download_stats))
+        // URL utilities
+        .route("/url-info", post(get_url_info))
         // Settings
         .route("/settings", get(get_settings))
         .route("/settings", put(update_settings))
@@ -273,6 +275,119 @@ async fn download_stats(
     State(state): State<Arc<AppState>>,
 ) -> Json<DownloadStats> {
     Json(state.download_manager.stats())
+}
+
+// ============ URL Info Endpoint ============
+
+#[derive(Debug, Deserialize)]
+pub struct UrlInfoRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UrlInfoResponse {
+    pub filename: Option<String>,
+    pub size: Option<u64>,
+    pub content_type: Option<String>,
+}
+
+/// Get file info from URL via HEAD request
+async fn get_url_info(
+    Json(req): Json<UrlInfoRequest>,
+) -> Result<Json<UrlInfoResponse>, AppError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    
+    // Make HEAD request to get headers without downloading
+    let response = client
+        .head(&req.url)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to fetch URL info: {}", e)))?;
+    
+    let headers = response.headers();
+    
+    // Try to get filename from Content-Disposition header
+    let filename = headers
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_content_disposition(v))
+        .or_else(|| extract_filename_from_url(&req.url));
+    
+    // Get file size from Content-Length
+    let size = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    
+    // Get content type
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
+    
+    Ok(Json(UrlInfoResponse {
+        filename,
+        size,
+        content_type,
+    }))
+}
+
+/// Parse filename from Content-Disposition header
+fn parse_content_disposition(header: &str) -> Option<String> {
+    // Handle formats like:
+    // attachment; filename="file.zip"
+    // attachment; filename*=UTF-8''file%20name.zip
+    // attachment; filename=file.zip
+    
+    // Try filename*= (RFC 5987) first
+    if let Some(start) = header.find("filename*=") {
+        let value = &header[start + 10..];
+        if let Some(quote_start) = value.find("''") {
+            let encoded = value[quote_start + 2..].split(';').next().unwrap_or("");
+            if let Ok(decoded) = urlencoding::decode(encoded.trim_matches('"').trim()) {
+                return Some(decoded.into_owned());
+            }
+        }
+    }
+    
+    // Try filename= with quotes
+    if let Some(start) = header.find("filename=\"") {
+        let value = &header[start + 10..];
+        if let Some(end) = value.find('"') {
+            return Some(value[..end].to_string());
+        }
+    }
+    
+    // Try filename= without quotes
+    if let Some(start) = header.find("filename=") {
+        let value = &header[start + 9..];
+        let filename = value.split(';').next().unwrap_or(value).trim();
+        if !filename.is_empty() {
+            return Some(filename.trim_matches('"').to_string());
+        }
+    }
+    
+    None
+}
+
+/// Extract filename from URL path as fallback
+fn extract_filename_from_url(url_str: &str) -> Option<String> {
+    url::Url::parse(url_str).ok().and_then(|url| {
+        let path = url.path();
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        segments.last().and_then(|s| {
+            let decoded = urlencoding::decode(s).ok()?.into_owned();
+            // Only return if it looks like a filename (has extension)
+            if decoded.contains('.') && !decoded.starts_with('.') {
+                Some(decoded)
+            } else {
+                None
+            }
+        })
+    })
 }
 
 // ============ Settings Endpoints ============
