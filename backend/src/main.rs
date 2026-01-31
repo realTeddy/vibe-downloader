@@ -78,6 +78,53 @@ fn check_linux_dependencies() {
 #[cfg(not(target_os = "linux"))]
 fn check_linux_dependencies() {}
 
+/// Check if linger is enabled for start-on-boot functionality (Linux only)
+#[cfg(target_os = "linux")]
+fn check_linger_status(settings: &Settings) {
+    use std::process::Command;
+    
+    // Only check if start_on_boot is enabled
+    if !settings.start_on_boot {
+        return;
+    }
+    
+    let user = match std::env::var("USER") {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    
+    // Check if linger is enabled by looking for the linger file
+    let linger_path = format!("/var/lib/systemd/linger/{}", user);
+    let linger_enabled = std::path::Path::new(&linger_path).exists();
+    
+    // Alternative check using loginctl
+    let linger_enabled = linger_enabled || {
+        Command::new("loginctl")
+            .args(["show-user", &user, "--property=Linger"])
+            .output()
+            .map(|out| {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout.contains("Linger=yes")
+            })
+            .unwrap_or(false)
+    };
+    
+    if !linger_enabled {
+        eprintln!("\n╭─────────────────────────────────────────────────────────────╮");
+        eprintln!("│  ⚠️  Linger Not Enabled                                      │");
+        eprintln!("├─────────────────────────────────────────────────────────────┤");
+        eprintln!("│  \"Start on boot\" is enabled but linger is not configured.  │");
+        eprintln!("│  The app won't start at boot until you enable linger.       │");
+        eprintln!("├─────────────────────────────────────────────────────────────┤");
+        eprintln!("│  Run this command to enable (requires sudo):                │");
+        eprintln!("│    sudo loginctl enable-linger {}  │", format!("{:<24}", user));
+        eprintln!("╰─────────────────────────────────────────────────────────────╯\n");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_linger_status(_settings: &Settings) {}
+
 /// Sync auto-launch setting with current executable path
 /// This ensures auto-launch works even if the binary is moved
 fn sync_auto_launch(settings: &Settings) {
@@ -149,6 +196,9 @@ fn main() -> Result<()> {
     // Load configuration
     let settings = config::load_or_create_default()?;
     info!("Configuration loaded from {:?}", config::config_path());
+    
+    // Check linger status for start-on-boot (Linux only)
+    check_linger_status(&settings);
 
     // Initialize database
     let db = Database::new()?;
